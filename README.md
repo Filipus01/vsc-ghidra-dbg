@@ -1,5 +1,7 @@
 # Ghidra Debug Bridge for Visual Studio Code
 
+<img src="assets/logo.jpg" alt="Ghidra Debug Bridge logo" width="400">
+
 Debug code you have no sources for, without leaving VS Code. Stop in a stripped function and
 instead of a disassembly view you get **Ghidra's pseudocode as the editor buffer** — with
 breakpoints on its lines, stepping that follows those lines, and a Locals panel filled with
