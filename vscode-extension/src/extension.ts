@@ -340,6 +340,15 @@ async function syncInstructionBreakpoints(session?: vscode.DebugSession): Promis
 	}
 }
 
+/** The module a frame's code sits in - none at all for a trampoline or a JIT stub. */
+async function moduleOf(
+	session: vscode.DebugSession,
+	frame: DapStackFrame
+): Promise<DapModule | undefined> {
+	const modules = await modulesFor(session);
+	return frame.moduleId === undefined ? undefined : modules.get(String(frame.moduleId));
+}
+
 async function resolveFrame(
 	session: vscode.DebugSession,
 	frame: DapStackFrame
@@ -349,8 +358,7 @@ async function resolveFrame(
 		throw new Error('the frame carries no instruction address');
 	}
 
-	const modules = await modulesFor(session);
-	const module = frame.moduleId === undefined ? undefined : modules.get(String(frame.moduleId));
+	const module = await moduleOf(session, frame);
 	if (!module?.path) {
 		throw new Error(`could not determine the module for frame ${frame.name}`);
 	}
@@ -1233,15 +1241,9 @@ async function stepIntoBinary(): Promise<void> {
 			}
 
 			if (!frame.source?.path) {
-				try {
-					await delay(config.stepping.settleMs());
-					await showFrame(session, frame);
-				}
-				catch (err) {
-					const reason = err instanceof Error ? err.message : String(err);
-					log(`stepIntoBinary: ${frame.name} without pseudocode: ${reason}`);
-					vscode.window.setStatusBarMessage(`Ghidra: ${reason}`, 6000);
-				}
+				// Same treatment as any other landing: a trampoline is stepped through first,
+				// and what we end up in is shown as pseudocode - or as source, if it has any.
+				await showWhereWeLanded(session, threadId, 'stepIntoBinary');
 				return;
 			}
 
@@ -1367,6 +1369,51 @@ async function returnTarget(
 	return fromStack === undefined ? undefined : formatAddr(fromStack);
 }
 
+/**
+ * A hook trampoline holds a handful of relocated instructions and a jump - long enough to
+ * step through, short enough that this bound is generous. Past it, whatever we are in is not
+ * a trampoline, and stopping beats stepping through the rest of the program one instruction
+ * at a time.
+ */
+const MAX_UNMAPPED_STEPS = 32;
+
+/**
+ * Detour libraries (MinHook and friends) build their trampoline in memory that belongs to no
+ * module, and so does a JIT. Stepping into a detoured function lands there first, and there
+ * is nothing to show for such a frame: no module means no program in Ghidra, and the step
+ * used to end on "could not determine the module". Step on instead - a few instructions later
+ * the trampoline jumps into the real function, which is where you meant to go.
+ */
+async function stepPastUnmappedCode(
+	session: vscode.DebugSession,
+	threadId: number,
+	label: string
+): Promise<DapStackFrame | undefined> {
+	let frame = await topFrame(session, threadId);
+	for (let i = 0; frame && i < MAX_UNMAPPED_STEPS; i++) {
+		if (frame.source?.path || (await moduleOf(session, frame))?.path) {
+			return frame;
+		}
+		if (i === 0) {
+			log(`${label}: ${frame.name} belongs to no module - a trampoline or a stub, stepping on`);
+		}
+		const stopped = waitForStop(session);
+		try {
+			await session.customRequest('stepIn', { threadId, granularity: 'instruction' });
+			await stopped;
+		}
+		catch (err) {
+			log(`${label}: ${err}`);
+			return frame;
+		}
+		frame = await topFrame(session, threadId);
+	}
+	if (frame) {
+		log(`${label}: still in code no module owns after ${MAX_UNMAPPED_STEPS} instructions`);
+	}
+	return frame;
+}
+
 /** Whatever we stopped on, show it: your own source, or the pseudocode from Ghidra. */
 async function showWhereWeLanded(
 	session: vscode.DebugSession,
@@ -1374,7 +1421,7 @@ async function showWhereWeLanded(
 	label: string
 ): Promise<void> {
 	await delay(config.stepping.settleMs());
-	const frame = await topFrame(session, threadId);
+	const frame = await stepPastUnmappedCode(session, threadId, label);
 	if (!frame) {
 		return;
 	}
