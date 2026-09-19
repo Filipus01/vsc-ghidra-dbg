@@ -5,6 +5,10 @@
   "version": "0.0.1",
   "publisher": "local",
   "private": true,
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/Filipus01/vsc-ghidra-dbg.git"
+  },
   "engines": {
     "vscode": "^1.90.0"
   },
@@ -258,7 +262,9 @@
   },
   "scripts": {
     "compile": "tsc -p ./",
-    "watch": "tsc -watch -p ./"
+    "watch": "tsc -watch -p ./",
+    "package": "npx --yes @vscode/vsce package --skip-license",
+    "install-local": "npm run compile && npm run package && code --install-extension vsc-ghidra-dbg-0.0.1.vsix --force"
   },
   "devDependencies": {
     "@types/node": "^20.14.0",
