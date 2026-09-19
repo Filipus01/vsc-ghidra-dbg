@@ -115,7 +115,6 @@ workspace, and its `launch.json` is where the attach configuration comes from.
 | `F11` | step into the call — your source, or the pseudocode when it has none | step into, by pseudocode lines |
 | `F10` | VS Code's own step over | run to the next pseudocode line |
 | `Shift+F11` | VS Code's own step out | step out, by the return address on the stack |
-| `Ctrl+F11` | step into code without sources | the same, when you want to go deeper than `F11` |
 | `F9` | VS Code's own breakpoint | instruction breakpoint at the line's address |
 | `Ctrl+Alt+P` | attach to process (while not debugging) | |
 

@@ -250,11 +250,6 @@
         "when": "inDebugMode && ghidraDbg.decompiledFrame"
       },
       {
-        "command": "ghidraDbg.stepIntoBinary",
-        "key": "ctrl+f11",
-        "when": "inDebugMode"
-      },
-      {
         "command": "ghidraDbg.attach",
         "key": "ctrl+alt+p",
         "when": "!inDebugMode"
