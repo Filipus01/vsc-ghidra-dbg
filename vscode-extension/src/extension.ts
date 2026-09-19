@@ -18,6 +18,24 @@ import {
 
 const SCHEME = 'ghidra-decomp';
 
+/**
+ * Whether we are standing in a frame the debugger has no sources for. The stepping keys hang
+ * off this in package.json, so which F10/F11 you get follows the frame, not whichever tab
+ * happens to have the focus: in your own code VS Code steps by statements as always, and only
+ * where the pseudocode is the truth do our own steps take over.
+ */
+const IN_DECOMPILED_FRAME = 'ghidraDbg.decompiledFrame';
+
+let inDecompiledFrame: boolean | undefined;
+
+function setDecompiledFrame(active: boolean): void {
+	if (inDecompiledFrame === active) {
+		return; // setContext is a round trip to the renderer - do not spam it on every step
+	}
+	inDecompiledFrame = active;
+	void vscode.commands.executeCommand('setContext', IN_DECOMPILED_FRAME, active);
+}
+
 let out: vscode.OutputChannel;
 let currentLineDecoration: vscode.TextEditorDecorationType;
 let locals: LocalsProvider;
@@ -425,6 +443,9 @@ async function showFrame(session: vscode.DebugSession, frame: DapStackFrame): Pr
 	const { entry, address } = await resolveFrame(session, frame);
 	const { doc, uri } = entry;
 
+	// From here on the pseudocode is what the stepping keys act on.
+	setDecompiledFrame(true);
+
 	locals.setFrame({
 		session,
 		frameId: frame.id,
@@ -481,6 +502,7 @@ const trackerFactory: vscode.DebugAdapterTrackerFactory = {
 
 				if (message.type === 'event' && message.event === 'continued') {
 					locals.clear('The program is running - stop it to see the variables.');
+					setDecompiledFrame(false); // nothing to step while it runs
 				}
 
 				if (message.type === 'event' && message.event === 'stopped') {
@@ -769,6 +791,7 @@ async function revealSource(frame: DapStackFrame): Promise<void> {
 	if (!path || !(await hasUsableSource(frame))) {
 		return;
 	}
+	setDecompiledFrame(false); // back in code with sources - VS Code's own stepping fits again
 	try {
 		const document = await vscode.workspace.openTextDocument(vscode.Uri.file(path));
 		const editor = await vscode.window.showTextDocument(document, {
@@ -1093,14 +1116,14 @@ async function stepIntoCall(
 	session: vscode.DebugSession,
 	threadId: number,
 	site: CallSite
-): Promise<void> {
+): Promise<boolean> {
 	let reached = false;
 	for (let i = 0; i < config.stepping.maxWalkSteps() && !reached; i++) {
 		const frame = await topFrame(session, threadId);
 		const pointer = frame?.instructionPointerReference;
 		if (!pointer) {
 			log('step into call: no frame on top of the stack');
-			return;
+			return false;
 		}
 		if (toAddr(pointer) === site.address) {
 			reached = true;
@@ -1113,12 +1136,12 @@ async function stepIntoCall(
 		}
 		catch (err) {
 			log(`step into call: ${err}`);
-			return;
+			return false;
 		}
 	}
 	if (!reached) {
 		log(`step into call: ${formatAddr(site.address)} not reached - the line branched around it`);
-		return;
+		return false;
 	}
 
 	const stopped = waitForStop(session);
@@ -1128,17 +1151,19 @@ async function stepIntoCall(
 	}
 	catch (err) {
 		log(`step into call: ${err}`);
-		return;
+		return false;
 	}
 
 	await showWhereWeLanded(session, threadId, 'step into call');
+	return true;
 }
 
 /**
- * Stepping from code that has sources into a function that has none. On a plain stepIn the
- * adapter skips everything without sources, so we step by instructions until the first frame
- * that has none. When the line held no such call, we end up on the next line - that is,
- * exactly how a normal step would behave.
+ * Step into, whatever the call leads to. A plain stepIn skips everything the adapter has no
+ * sources for, so we step by instructions ourselves and then show what we found: your own
+ * source when the call went there, the pseudocode from Ghidra when it went into a module
+ * without sources, and neither when the line had nothing to enter - then we end up on the
+ * next line, exactly as a normal step would.
  */
 async function stepIntoBinary(): Promise<void> {
 	const session = vscode.debug.activeDebugSession;
@@ -1160,8 +1185,12 @@ async function stepIntoBinary(): Promise<void> {
 	try {
 		const start = await topFrame(session, threadId);
 
-		// More than one call in the line means the plain step would always pick the first
-		// one, and an adapter without stepInTargets (cppvsdbg has none) offers no choice.
+		// Walking the line up to the call and stepping in exactly there is what keeps us out
+		// of the toolchain's own helpers: they are filtered out of the list, and we step over
+		// them on the way. Stepping in blindly enters them instead, and every one of those
+		// stops is seen by VS Code, which opens the source file they have no copy of - the
+		// empty stack.cpp. More than one call also means a choice to offer, because an adapter
+		// without stepInTargets (cppvsdbg has none) would always take the first.
 		if (start) {
 			let sites: CallSite[] = [];
 			try {
@@ -1173,9 +1202,12 @@ async function stepIntoBinary(): Promise<void> {
 			log(`step into: ${sites.length} call(s) on this line${sites.length > 1 ? ' - asking' : ''}`);
 			if (sites.length > 1) {
 				const chosen = await pickCallSite(sites);
-				if (chosen) {
-					await stepIntoCall(session, threadId, chosen);
+				if (!chosen || (await stepIntoCall(session, threadId, chosen))) {
+					return;
 				}
+				log('step into: falling back to stepping by instructions');
+			}
+			else if (sites.length === 1 && (await stepIntoCall(session, threadId, sites[0]))) {
 				return;
 			}
 		}
@@ -1214,18 +1246,14 @@ async function stepIntoBinary(): Promise<void> {
 			}
 
 			if (!(await hasUsableSource(frame))) {
-				// a CRT helper whose source is not on disk - leave it with a single stepOut
-				// instead of grinding through it instruction by instruction
+				// A helper of the toolchain - the runtime checks of a Debug build, for one -
+				// with debug information but no file on this machine to show. Leave it in one
+				// go instead of grinding through it instruction by instruction.
 				log(`stepIntoBinary: skipping ${frame.name} (${frame.source.path} does not exist)`);
-				const escaped = waitForStop(session);
-				try {
-					await session.customRequest('stepOut', { threadId, granularity: 'instruction' });
-					await escaped;
-				}
-				catch (err) {
-					log(`stepIntoBinary: could not leave ${frame.name}: ${err}`);
+				if (!(await leaveFrame(session, threadId, 'stepIntoBinary'))) {
 					return;
 				}
+				closeMissingSourceTabs();
 				continue;
 			}
 
@@ -1238,6 +1266,69 @@ async function stepIntoBinary(): Promise<void> {
 	}
 	finally {
 		stepping = false;
+	}
+}
+
+/**
+ * Every stop is seen by VS Code too, and it opens the source of the frame on top - including
+ * the file a toolchain helper points at and nobody has. We step out of such frames, but the
+ * empty tab it opened in the meantime stays behind, so we close it again.
+ */
+function closeMissingSourceTabs(): void {
+	for (const group of vscode.window.tabGroups.all) {
+		for (const tab of group.tabs) {
+			const input = tab.input;
+			if (!(input instanceof vscode.TabInputText) || input.uri.scheme !== 'file') {
+				continue;
+			}
+			if (sourceExists.get(input.uri.fsPath) === false) {
+				void vscode.window.tabGroups.close(tab, false);
+			}
+		}
+	}
+}
+
+/**
+ * Leaves the frame on top of the stack. A plain stepOut is enough when the adapter can unwind
+ * it; when it cannot - which is the case for code without sources - we break on the caller's
+ * address instead and let it run there.
+ */
+async function leaveFrame(
+	session: vscode.DebugSession,
+	threadId: number,
+	label: string
+): Promise<boolean> {
+	let frames: DapStackFrame[] = [];
+	try {
+		const trace = await session.customRequest('stackTrace', { threadId, startFrame: 0, levels: 2 });
+		frames = (trace?.stackFrames ?? []) as DapStackFrame[];
+	}
+	catch (err) {
+		log(`${label}: ${err}`);
+		return false;
+	}
+
+	const target = frames[1]?.instructionPointerReference;
+	const stopped = waitForStop(session, config.stepping.runTimeoutMs());
+	try {
+		if (target) {
+			await applyInstructionBreakpoints(session, [target]);
+			await session.customRequest('continue', { threadId });
+		}
+		else {
+			await session.customRequest('stepOut', { threadId, granularity: 'instruction' });
+		}
+		await stopped;
+		return true;
+	}
+	catch (err) {
+		log(`${label}: could not leave ${frames[0]?.name ?? 'the frame'}: ${err}`);
+		return false;
+	}
+	finally {
+		if (target) {
+			await applyInstructionBreakpoints(session); // drop the temporary one
+		}
 	}
 }
 
@@ -1577,6 +1668,7 @@ export function activate(context: vscode.ExtensionContext): void {
 			}
 			if (frame.source?.path) {
 				locals.clear('The frame has sources - its variables are in the Variables panel.');
+				setDecompiledFrame(false);
 				return; // it has a real source, VS Code will show it itself
 			}
 			try {
@@ -1584,6 +1676,8 @@ export function activate(context: vscode.ExtensionContext): void {
 			}
 			catch (err) {
 				const reason = err instanceof Error ? err.message : String(err);
+				// No pseudocode means our stepping has nothing to work from either.
+				setDecompiledFrame(false);
 				log(`pseudocode skipped for ${frame.name}: ${reason}`);
 				vscode.window.setStatusBarMessage(`Ghidra: ${reason}`, 6000);
 			}
@@ -1599,6 +1693,7 @@ export function activate(context: vscode.ExtensionContext): void {
 			moduleDeltas.clear();
 			clearFrameCaches();
 			locals.clear();
+			setDecompiledFrame(false);
 			pseudoColumn = undefined;
 			disassemblyOpened = false;
 		}),

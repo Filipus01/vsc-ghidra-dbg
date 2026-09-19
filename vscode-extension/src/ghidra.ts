@@ -120,9 +120,35 @@ async function get<T>(path: string): Promise<T> {
 		);
 	}
 
-	const body = (await response.json()) as Record<string, unknown>;
+	// Read the text first: an error from the plugin is JSON, but its HTTP server answers an
+	// unknown path with an HTML page, and parsing that as JSON hides what actually happened.
+	const text = await response.text();
+	let body: Record<string, unknown> | undefined;
+	try {
+		body = JSON.parse(text) as Record<string, unknown>;
+	}
+	catch {
+		body = undefined;
+	}
+
+	const endpoint = path.split('?')[0];
 	if (!response.ok) {
-		throw new Error(String(body?.error ?? `HTTP ${response.status}`));
+		if (body?.error) {
+			throw new Error(String(body.error));
+		}
+		if (response.status === 404) {
+			throw new Error(
+				`the plugin at ${base} does not serve ${endpoint} - it is older than this ` +
+					'extension; rebuild and reinstall it with ghidra-plugin/build.sh, then restart Ghidra'
+			);
+		}
+		throw new Error(`HTTP ${response.status} from ${endpoint}`);
+	}
+	if (body === undefined || body === null) {
+		throw new Error(
+			`${endpoint} did not answer with JSON - is something other than the VscGhidraDbg ` +
+				`plugin listening on ${base}?`
+		);
 	}
 	return body as T;
 }

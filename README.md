@@ -35,10 +35,13 @@ settings.
   Ghidra puts the Decompiler beside the Listing.
 - **Breakpoints on pseudocode lines.** `F9` in that buffer becomes an instruction breakpoint
   at the address Ghidra maps the line to, and survives a restart of the session.
-- **Stepping that means something.** `F10` runs to the next *pseudocode* line (temporary
-  breakpoints on every other line of the function, so loops and jumps take care of
-  themselves), `F11`/`Shift+F11` step in and out, and `Ctrl+F11` steps from your own code
-  into the binary — asking which call when the line has several.
+- **One F11, two worlds.** The stepping keys follow the frame you are standing in, not the
+  tab that happens to have the focus. In your own code, `F11` walks the line to the call and
+  steps in there: into your source when that is where it leads, into Ghidra's pseudocode when
+  it leads into a module without sources — and it asks which call when the line has several.
+  In the pseudocode, `F10` runs to the next *pseudocode* line (temporary breakpoints on every
+  other line of the function, so loops and jumps take care of themselves) and `F11`/`Shift+F11`
+  step in and out by those lines.
 - **Locals for a frame the debugger cannot see into.** Parameters, locals and globals as
   Ghidra names and types them, with values read from the live process, plus the same value on
   hover over any identifier in the pseudocode.
@@ -100,19 +103,24 @@ workspace, and its `launch.json` is where the attach configuration comes from.
 1. Open the binary in Ghidra (CodeBrowser, plugin enabled) and let the analysis finish.
 2. In VS Code, start your debug session. `Ctrl+Alt+P` runs the first `"request": "attach"`
    configuration of the workspace, since VS Code has no Attach action of its own.
-3. Stop anywhere in code without sources — on a breakpoint, or by stepping into it with
-   `Ctrl+F11`. The pseudocode opens by itself, and so does the **Locals (Ghidra)** panel in
-   the Debug view.
+3. Stop anywhere in code without sources — on a breakpoint, or by pressing `F11` on a line
+   that calls into it. The pseudocode opens by itself, and so does the **Locals (Ghidra)**
+   panel in the Debug view.
 4. Set breakpoints in the pseudocode, step by its lines, hover its variables.
 
-| Key | Command | When |
+| Key | In your own code | In the pseudocode |
 | --- | --- | --- |
-| `F10` | step to the next pseudocode line | in a pseudocode buffer |
-| `F11` | step into | in a pseudocode buffer |
-| `Shift+F11` | step out | in a pseudocode buffer |
-| `Ctrl+F11` | step into code without sources | any time while debugging |
-| `Ctrl+Alt+P` | attach to process | while not debugging |
-| `F9` | breakpoint on the pseudocode line | in a pseudocode buffer |
+| `F11` | step into the call — your source, or the pseudocode when it has none | step into, by pseudocode lines |
+| `F10` | VS Code's own step over | run to the next pseudocode line |
+| `Shift+F11` | VS Code's own step out | step out, by the return address on the stack |
+| `Ctrl+F11` | step into code without sources | the same, when you want to go deeper than `F11` |
+| `F9` | VS Code's own breakpoint | instruction breakpoint at the line's address |
+| `Ctrl+Alt+P` | attach to process (while not debugging) | |
+
+Which set you get is decided by a context key the extension keeps in step with the current
+frame, so switching tabs never changes what a key does. Frames the compiler left debug
+information for but no source file — the runtime checks of a Debug build, say — are stepped
+over rather than into, so you never land in an empty editor.
 
 The command palette has the rest under **Ghidra Dbg**: refreshing the pseudocode after you
 rename or retype something in Ghidra, rebuilding the split with the Disassembly view, the log,

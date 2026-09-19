@@ -44,7 +44,7 @@
       },
       {
         "command": "ghidraDbg.stepIntoBinary",
-        "title": "Step into code without sources",
+        "title": "Step into (pseudocode when the call has no sources)",
         "category": "Ghidra Dbg"
       },
       {
@@ -227,17 +227,22 @@
       {
         "command": "ghidraDbg.stepOver",
         "key": "f10",
-        "when": "inDebugMode && resourceScheme == 'ghidra-decomp'"
+        "when": "inDebugMode && ghidraDbg.decompiledFrame"
       },
       {
         "command": "ghidraDbg.stepInto",
         "key": "f11",
-        "when": "inDebugMode && resourceScheme == 'ghidra-decomp'"
+        "when": "inDebugMode && ghidraDbg.decompiledFrame"
+      },
+      {
+        "command": "ghidraDbg.stepIntoBinary",
+        "key": "f11",
+        "when": "inDebugMode && !ghidraDbg.decompiledFrame"
       },
       {
         "command": "ghidraDbg.stepOut",
         "key": "shift+f11",
-        "when": "inDebugMode && resourceScheme == 'ghidra-decomp'"
+        "when": "inDebugMode && ghidraDbg.decompiledFrame"
       },
       {
         "command": "ghidraDbg.stepIntoBinary",
