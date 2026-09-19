@@ -1,0 +1,6 @@
+name=VscGhidraDbg
+description=HTTP API with decompilation, line-to-address mapping, variable storage and the register model, for debugger front ends
+author=filip
+createdOn=2026-09-18
+# build.sh fills this in from the Ghidra installation it builds against.
+version=@GHIDRA_VERSION@

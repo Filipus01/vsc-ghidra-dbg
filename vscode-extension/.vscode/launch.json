@@ -1,0 +1,16 @@
+{
+  // To debug against a real project, append its path to "args" - the extension host opens it
+  // as the workspace, and its launch.json is where the attach configuration comes from.
+  "version": "0.2.0",
+  "configurations": [
+    {
+      "name": "Run Extension",
+      "type": "extensionHost",
+      "request": "launch",
+      "args": [
+        "--extensionDevelopmentPath=${workspaceFolder}"
+      ],
+      "outFiles": ["${workspaceFolder}/out/**/*.js"]
+    }
+  ]
+}

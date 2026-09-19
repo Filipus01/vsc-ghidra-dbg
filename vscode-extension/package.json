@@ -1,0 +1,263 @@
+{
+  "name": "vsc-ghidra-dbg",
+  "displayName": "Ghidra Debug Bridge",
+  "description": "Debug code you have no sources for: pseudocode, stepping and variable values from Ghidra",
+  "version": "0.0.1",
+  "publisher": "local",
+  "private": true,
+  "engines": {
+    "vscode": "^1.90.0"
+  },
+  "categories": [
+    "Debuggers"
+  ],
+  "activationEvents": [
+    "onStartupFinished"
+  ],
+  "main": "./out/extension.js",
+  "contributes": {
+    "commands": [
+      {
+        "command": "ghidraDbg.showFrame",
+        "title": "Show pseudocode for the selected frame",
+        "category": "Ghidra Dbg"
+      },
+      {
+        "command": "ghidraDbg.refresh",
+        "title": "Refresh pseudocode from Ghidra",
+        "category": "Ghidra Dbg"
+      },
+      {
+        "command": "ghidraDbg.stepOver",
+        "title": "Step to the next pseudocode line",
+        "category": "Ghidra Dbg"
+      },
+      {
+        "command": "ghidraDbg.stepInto",
+        "title": "Step into (pseudocode)",
+        "category": "Ghidra Dbg"
+      },
+      {
+        "command": "ghidraDbg.stepOut",
+        "title": "Step out (pseudocode)",
+        "category": "Ghidra Dbg"
+      },
+      {
+        "command": "ghidraDbg.stepIntoBinary",
+        "title": "Step into code without sources",
+        "category": "Ghidra Dbg"
+      },
+      {
+        "command": "ghidraDbg.locals.refresh",
+        "title": "Refresh variable values",
+        "category": "Ghidra Dbg",
+        "icon": "$(refresh)"
+      },
+      {
+        "command": "ghidraDbg.splitDisassembly",
+        "title": "Split pseudocode with the Disassembly view",
+        "category": "Ghidra Dbg"
+      },
+      {
+        "command": "ghidraDbg.attach",
+        "title": "Attach to process"
+      },
+      {
+        "command": "ghidraDbg.spike.modules",
+        "title": "Diag - list loaded modules",
+        "category": "Ghidra Dbg"
+      },
+      {
+        "command": "ghidraDbg.spike.registers",
+        "title": "Diag - dump frame registers",
+        "category": "Ghidra Dbg"
+      },
+      {
+        "command": "ghidraDbg.spike.lineDisassembly",
+        "title": "Diag - dump line disassembly",
+        "category": "Ghidra Dbg"
+      },
+      {
+        "command": "ghidraDbg.spike.instructionBreakpoint",
+        "title": "Diag - set an instruction breakpoint",
+        "category": "Ghidra Dbg"
+      },
+      {
+        "command": "ghidraDbg.showLog",
+        "title": "Show log",
+        "category": "Ghidra Dbg"
+      }
+    ],
+    "configuration": {
+      "title": "Ghidra Debug Bridge",
+      "properties": {
+        "ghidraDbg.apiUrl": {
+          "type": "string",
+          "default": "http://127.0.0.1:18000",
+          "description": "Base URL of the HTTP API served by the VscGhidraDbg plugin in Ghidra. It has to match the listen address and port under Edit > Tool Options > VS Code Debug Bridge."
+        },
+        "ghidraDbg.requestTimeoutMs": {
+          "type": "number",
+          "default": 30000,
+          "minimum": 100,
+          "description": "How long to wait for a reply from Ghidra. Decompiling a large function is the slow case."
+        },
+        "ghidraDbg.framePointerRegister": {
+          "type": "string",
+          "default": "",
+          "description": "Register holding the frame pointer of the target processor (EBP, RBP, X29, R11, ...). Empty means Ghidra picks it from the usual names for that processor."
+        },
+        "ghidraDbg.splitDisassembly": {
+          "type": "boolean",
+          "default": true,
+          "description": "Open VS Code's Disassembly view in the editor group next to the pseudocode, the way Ghidra shows the Listing and the Decompiler side by side."
+        },
+        "ghidraDbg.attachConfiguration": {
+          "type": "string",
+          "default": "",
+          "description": "Name of the attach configuration in the workspace launch.json. Empty means the first configuration with \"request\": \"attach\"."
+        },
+        "ghidraDbg.modules.baseAlignment": {
+          "type": "number",
+          "default": 65536,
+          "minimum": 1,
+          "description": "Boundary a module can be loaded on, used to find where the loader actually put it when the debugger does not report module bases. 65536 for Windows PE images, 4096 is the usual page alignment elsewhere."
+        },
+        "ghidraDbg.modules.baseScanLimit": {
+          "type": "number",
+          "default": 1024,
+          "minimum": 1,
+          "description": "How many alignment boundaries to walk back over while looking for the base of a module."
+        },
+        "ghidraDbg.stepping.maxInstructionSteps": {
+          "type": "number",
+          "default": 400,
+          "minimum": 1,
+          "description": "Upper bound on single instruction steps in one stepping command, so a step can never run forever."
+        },
+        "ghidraDbg.stepping.maxWalkSteps": {
+          "type": "number",
+          "default": 200,
+          "minimum": 1,
+          "description": "Upper bound on instruction steps while walking a line up to a chosen call."
+        },
+        "ghidraDbg.stepping.stopTimeoutMs": {
+          "type": "number",
+          "default": 5000,
+          "minimum": 100,
+          "description": "How long to wait for the target to stop after a single instruction step."
+        },
+        "ghidraDbg.stepping.runTimeoutMs": {
+          "type": "number",
+          "default": 10000,
+          "minimum": 100,
+          "description": "How long to wait for the target to stop after being let run to a temporary breakpoint (step over a pseudocode line, step out)."
+        },
+        "ghidraDbg.stepping.settleMs": {
+          "type": "number",
+          "default": 150,
+          "minimum": 0,
+          "description": "Pause before showing the frame we landed on, giving VS Code time to finish picking a frame of its own."
+        },
+        "ghidraDbg.values.maxValueBytes": {
+          "type": "number",
+          "default": 256,
+          "minimum": 1,
+          "description": "Largest variable read whole from the target's memory."
+        },
+        "ghidraDbg.values.maxStringBytes": {
+          "type": "number",
+          "default": 64,
+          "minimum": 1,
+          "description": "How much of a string is pulled in behind a character pointer."
+        },
+        "ghidraDbg.values.maxBlockReadBytes": {
+          "type": "number",
+          "default": 4096,
+          "minimum": 1,
+          "description": "Largest single read covering all the stack variables of a frame; above this the variables are read one by one."
+        },
+        "ghidraDbg.disassembly.maxLineInstructions": {
+          "type": "number",
+          "default": 80,
+          "minimum": 1,
+          "description": "How many instructions to disassemble when looking for the calls of one line."
+        },
+        "ghidraDbg.disassembly.callPattern": {
+          "type": "string",
+          "default": "^(call|callq|bl|blx|blr|jal|jalr)\\b",
+          "description": "Matches a call in the disassembly text of the debug adapter. Case is ignored. The default covers x86, ARM and MIPS mnemonics."
+        },
+        "ghidraDbg.disassembly.returnPattern": {
+          "type": "string",
+          "default": "^(ret|retn|retq|bx\\s+lr|jr\\s+\\$?ra)\\b",
+          "description": "Matches a return, where the search for calls of a line stops. Case is ignored. Mind the processors where one mnemonic is both (blr returns on PowerPC and calls on AArch64)."
+        },
+        "ghidraDbg.disassembly.skipCallPattern": {
+          "type": "string",
+          "default": "^_{0,2}(RTC_|chkstk|alloca_probe|security_check_cookie|security_cookie|CheckForDebuggerJustMyCode)",
+          "description": "Calls left out of \"step into which call?\" - helpers the toolchain wraps around calls of its own, which are in nobody's source. The default covers MSVC."
+        },
+        "ghidraDbg.disassembly.namedCallPattern": {
+          "type": "string",
+          "default": "^call\\s+(?:(?:near|far|short|dword|qword|word|ptr)\\s+)*\\[?\\s*(.+?)\\s*\\(([0-9A-Fa-f]+)h\\)\\s*\\]?$",
+          "description": "Pulls the name and the target address out of a call instruction the disassembler already resolved, as two groups: name, then address in hex. The default is MASM syntax, the way cppvsdbg prints it."
+        }
+      }
+    },
+    "views": {
+      "debug": [
+        {
+          "id": "ghidraDbg.locals",
+          "name": "Locals (Ghidra)",
+          "when": "inDebugMode"
+        }
+      ]
+    },
+    "menus": {
+      "view/title": [
+        {
+          "command": "ghidraDbg.locals.refresh",
+          "when": "view == ghidraDbg.locals",
+          "group": "navigation"
+        }
+      ]
+    },
+    "keybindings": [
+      {
+        "command": "ghidraDbg.stepOver",
+        "key": "f10",
+        "when": "inDebugMode && resourceScheme == 'ghidra-decomp'"
+      },
+      {
+        "command": "ghidraDbg.stepInto",
+        "key": "f11",
+        "when": "inDebugMode && resourceScheme == 'ghidra-decomp'"
+      },
+      {
+        "command": "ghidraDbg.stepOut",
+        "key": "shift+f11",
+        "when": "inDebugMode && resourceScheme == 'ghidra-decomp'"
+      },
+      {
+        "command": "ghidraDbg.stepIntoBinary",
+        "key": "ctrl+f11",
+        "when": "inDebugMode"
+      },
+      {
+        "command": "ghidraDbg.attach",
+        "key": "ctrl+alt+p",
+        "when": "!inDebugMode"
+      }
+    ]
+  },
+  "scripts": {
+    "compile": "tsc -p ./",
+    "watch": "tsc -watch -p ./"
+  },
+  "devDependencies": {
+    "@types/node": "^20.14.0",
+    "@types/vscode": "^1.90.0",
+    "typescript": "^5.4.5"
+  }
+}
