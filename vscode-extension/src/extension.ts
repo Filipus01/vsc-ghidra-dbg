@@ -1673,6 +1673,9 @@ async function hoverValue(
 		'',
 		`storage: \`${entry.location}\`${entry.address === undefined ? '' : ` (\`${formatAddr(entry.address)}\`)`}`,
 	];
+	if (entry.raw) {
+		lines.push(`bytes there: \`${entry.raw}\``);
+	}
 	if (entry.note) {
 		lines.push('', `_${entry.note}_`);
 	}

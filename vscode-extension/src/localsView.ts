@@ -165,6 +165,15 @@ function tooltip(entry: ResolvedVar): vscode.MarkdownString {
 	if (entry.address !== undefined) {
 		lines.push(`address: \`${formatAddr(entry.address)}\``);
 	}
+	if (entry.frameBase !== undefined) {
+		lines.push(
+			`frame base: \`${formatAddr(entry.frameBase)}\`` +
+				(entry.frameBaseSource ? ` (${entry.frameBaseSource})` : '')
+		);
+	}
+	if (entry.raw) {
+		lines.push(`bytes there: \`${entry.raw}\``);
+	}
 	if (entry.note) {
 		lines.push('', `_${entry.note}_`);
 	}

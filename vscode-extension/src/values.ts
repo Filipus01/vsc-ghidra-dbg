@@ -30,10 +30,18 @@ export interface ResolvedVar {
 	address?: bigint;
 	/** the value may not match what the pseudocode shows at this point */
 	approximate: boolean;
+	/** the bytes at the address, low to high, when the value text is not them */
+	raw?: string;
+	/** the stack top as of entry every stack offset hangs off */
+	frameBase?: bigint;
+	/** how the frame base was arrived at - that is how far it can be trusted */
+	frameBaseSource?: string;
 	note?: string;
 }
 
 const MAX_HEX_BYTES = 16;
+/** Shown instead of the leftovers sitting in a stack slot the program has not written yet. */
+const NOT_LIVE = '<not on the stack yet>';
 
 export async function readMemory(
 	session: vscode.DebugSession,
@@ -279,10 +287,15 @@ const RETURN_SLACK = 16n;
  * The stack top as of function entry - Ghidra counts variable offsets from there.
  *
  * The order is by how much each source can be trusted. A frame pointer is a register value,
- * so it is exact. The live stack comes second: the slot holding the caller's return address
- * IS the frame base, and that is ground truth. Ghidra's own stack depth comes last, because
- * it is demonstrably wrong for some functions - there are entry points where the depth must
- * be 0 and it reports one that puts the base below the stack pointer.
+ * so it is exact. Ghidra's stack depth comes next: it is the function's own arithmetic from
+ * its entry to here, and a register we read holds the other end of it. Looking for the return
+ * address on the live stack is the fallback, for functions Ghidra cannot work out - it takes
+ * the lowest slot holding an address the debugger reports further down the stack, and when a
+ * frame between us and those is missing from the stack trace (a hook trampoline leaves one
+ * out), the lowest such slot is the wrong frame's base.
+ *
+ * Whatever the source, a base below the stack pointer is not a base at all: the stack top as
+ * of entry is at or above where the stack pointer stands now.
  */
 async function resolveFrameBase(
 	ctx: FrameContext,
@@ -304,23 +317,26 @@ async function resolveFrameBase(
 		return undefined;
 	}
 	const sp = registerValue(registers, stackPointer, model);
+	const growsDown = model.stackGrowsDown !== false;
+	const reachable = (base: bigint): boolean =>
+		sp === undefined || !growsDown || base >= sp;
+
 	const fromDepth =
 		depths.spDepth !== null && sp !== undefined ? sp - BigInt(depths.spDepth) : undefined;
-
-	const scanned = await stackEntryFromReturn(ctx, model, registers, stackPointer, log);
-	if (scanned !== undefined) {
-		if (fromDepth !== undefined && fromDepth !== scanned) {
-			log(
-				`  Ghidra's stack depth would give ${formatAddr(fromDepth)}, the stack says ` +
-					`${formatAddr(scanned)} - trusting the stack`
-			);
-		}
-		return { address: scanned, source: 'return address on the stack' };
+	if (fromDepth !== undefined && reachable(fromDepth)) {
+		return { address: fromDepth, source: 'stack depth from Ghidra' };
+	}
+	if (fromDepth !== undefined) {
+		log(
+			`  Ghidra's stack depth puts the frame base at ${formatAddr(fromDepth)}, below ` +
+				`${stackPointer} - ignoring it`
+		);
 	}
 
-	return fromDepth === undefined
+	const scanned = await stackEntryFromReturn(ctx, model, registers, stackPointer, log);
+	return scanned === undefined
 		? undefined
-		: { address: fromDepth, source: 'stack depth from Ghidra' };
+		: { address: scanned, source: 'return address on the stack' };
 }
 
 const MAX_RETURN_CANDIDATES = 4;
@@ -331,6 +347,27 @@ const MAX_RETURN_CANDIDATES = 4;
  * following ones, since we are looking for the lowest matching slot anyway.
  */
 export async function returnCandidates(ctx: FrameContext): Promise<bigint[]> {
+	const frames = await stackFramesOf(ctx);
+	const index = frames.findIndex((frame) => frame.id === ctx.frameId);
+	if (index < 0) {
+		return [];
+	}
+	return frames
+		.slice(index + 1)
+		.map((frame) => frame.instructionPointerReference)
+		.filter((pointer): pointer is string => Boolean(pointer))
+		.slice(0, MAX_RETURN_CANDIDATES)
+		.map(toAddr);
+}
+
+interface DapFrameBrief {
+	id: number;
+	name?: string;
+	instructionPointerReference?: string;
+}
+
+/** The thread's frames, innermost first. Not cached: frame ids are reused between stops. */
+async function stackFramesOf(ctx: FrameContext): Promise<DapFrameBrief[]> {
 	if (ctx.threadId === undefined) {
 		return [];
 	}
@@ -340,24 +377,61 @@ export async function returnCandidates(ctx: FrameContext): Promise<bigint[]> {
 			startFrame: 0,
 			levels: 200,
 		});
-		const frames = (trace?.stackFrames ?? []) as Array<{
-			id: number;
-			instructionPointerReference?: string;
-		}>;
-		const index = frames.findIndex((frame) => frame.id === ctx.frameId);
-		if (index < 0) {
-			return [];
-		}
-		return frames
-			.slice(index + 1)
-			.map((frame) => frame.instructionPointerReference)
-			.filter((pointer): pointer is string => Boolean(pointer))
-			.slice(0, MAX_RETURN_CANDIDATES)
-			.map(toAddr);
+		return (trace?.stackFrames ?? []) as DapFrameBrief[];
 	}
 	catch {
 		return [];
 	}
+}
+
+/**
+ * The live stack pointer, but only when it belongs to the frame we are computing. Only the
+ * innermost frame has one: further up the stack the debugger reports either the top frame's
+ * registers unchanged or unwound ones, and neither says where that frame's outgoing-argument
+ * area currently ends. When we cannot tell, there is no yardstick and the liveness check stays
+ * off - showing a stale value, as we always did, beats hiding a live one.
+ */
+async function liveStackPointer(
+	ctx: FrameContext,
+	depths: ghidra.FrameDepths,
+	model: ghidra.RegisterModel,
+	registers: RegisterMap,
+	log: (message: string) => void
+): Promise<bigint | undefined> {
+	const frames = await stackFramesOf(ctx);
+	const top = frames[0];
+	const pointer = top?.instructionPointerReference;
+	// The id is only the first try: some adapters hand out frame ids afresh on every stackTrace,
+	// and then ours never matches. What really says "this is the frame we are computing" is that
+	// the program counter on top of the stack is the one we decompiled.
+	const ours =
+		top !== undefined &&
+		(top.id === ctx.frameId ||
+			(pointer !== undefined && toAddr(pointer) === ctx.address + ctx.delta));
+	if (!ours) {
+		log(
+			top === undefined
+				? '  the stack is unknown - no liveness check on the slots'
+				: `  not the innermost frame (top is ${top.name ?? '?'} at ${pointer ?? 'no address'})` +
+					' - no liveness check'
+		);
+		return undefined;
+	}
+	const name = depths.stackPointer ?? model.stackPointer;
+	const sp = name ? registerValue(registers, name, model) : undefined;
+	log(`  liveness yardstick: ${name ?? 'stack pointer'}=${describe(sp)}`);
+	return sp;
+}
+
+/**
+ * A slot the program has not written yet. Past the live stack pointer is scratch space: the
+ * next call or an interrupt may overwrite it at any moment, and what sits there now is whatever
+ * an earlier, deeper call left behind - 0xcc fill, in a debug build. Which side "past" is on
+ * comes from Ghidra's compiler spec; a plugin too old to send it leaves us assuming a downward
+ * stack, which is x86, ARM, MIPS and most others.
+ */
+function notWrittenYet(address: bigint, size: number, sp: bigint, growsDown: boolean): boolean {
+	return growsDown ? address < sp : address + BigInt(size) > sp;
 }
 
 /**
@@ -421,20 +495,27 @@ function locationLabel(
 	variable: ghidra.DecompVar,
 	depths: ghidra.FrameDepths,
 	model: ghidra.RegisterModel,
-	address: bigint | undefined
+	address: bigint | undefined,
+	sp: bigint | undefined
 ): string {
 	switch (variable.kind) {
 		case 'stack': {
-			const anchor =
-				depths.framePointer && depths.fpDepth !== null
-					? depths.framePointer
-					: depths.stackPointer ?? model.stackPointer ?? 'stack';
-			const shift =
-				depths.framePointer && depths.fpDepth !== null
-					? (variable.offset ?? 0) - depths.fpDepth
-					: variable.offset ?? 0;
-			const sign = shift < 0 ? '-' : '+';
-			return `${anchor}${sign}0x${Math.abs(shift).toString(16)}`;
+			if (depths.framePointer && depths.fpDepth !== null) {
+				const shift = (variable.offset ?? 0) - depths.fpDepth;
+				return `${depths.framePointer}${shift < 0 ? '-' : '+'}0x${Math.abs(shift).toString(16)}`;
+			}
+			// Without a frame pointer the offset counts from the frame base, not from the stack
+			// pointer: printing it as "ESP-0x14" named a slot a whole frame away from the one we
+			// read. Against the live stack pointer where we have one - that is what you would
+			// type in a watch window - and against the frame base otherwise.
+			const stackPointer = depths.stackPointer ?? model.stackPointer;
+			if (stackPointer && sp !== undefined && address !== undefined) {
+				const shift = address - sp;
+				const magnitude = shift < 0n ? -shift : shift;
+				return `${stackPointer}${shift < 0n ? '-' : '+'}0x${magnitude.toString(16)}`;
+			}
+			const offset = variable.offset ?? 0;
+			return `frame${offset < 0 ? '-' : '+'}0x${Math.abs(offset).toString(16)}`;
 		}
 		case 'register':
 			return variable.reg ?? 'register';
@@ -525,32 +606,55 @@ export async function computeValues(
 
 	const block = await readStackBlock(ctx, addresses);
 	const resolved: ResolvedVar[] = [];
+	const growsDown = model.stackGrowsDown !== false;
+	const sp = await liveStackPointer(ctx, depths, model, registers, log);
+	const notLive: string[] = [];
 
 	for (const variable of ctx.doc.vars) {
 		const address = addresses.get(variable);
 		const size = Math.min(Math.max(variable.size, 1), maxValueBytes);
 		let bytes: Buffer | undefined;
-		let raw: bigint | undefined;
+		let registerWord: bigint | undefined;
 
 		if (variable.kind === 'register') {
-			raw = registerValue(registers, variable.reg ?? '', model);
-			if (raw !== undefined) {
-				bytes = wordBytes(raw, Math.min(size, 8), ctx.bigEndian);
+			registerWord = registerValue(registers, variable.reg ?? '', model);
+			if (registerWord !== undefined) {
+				bytes = wordBytes(registerWord, Math.min(size, 8), ctx.bigEndian);
 			}
 		}
 		else if (address !== undefined) {
 			bytes = block?.slice(address, size) ?? (await readMemory(ctx.session, address, size));
 		}
 
-		const note = noteFor(ctx, variable, base, bytes);
+		const stale =
+			variable.kind === 'stack' &&
+			address !== undefined &&
+			sp !== undefined &&
+			notWrittenYet(address, size, sp, growsDown);
+		if (stale) {
+			notLive.push(variable.name);
+		}
+
+		const note = noteFor(ctx, variable, base, bytes, stale);
 		resolved.push({
 			variable,
-			value: bytes ? await formatValue(ctx, variable, bytes) : '<unavailable>',
-			location: locationLabel(variable, depths, model, address),
+			value: stale
+				? NOT_LIVE
+				: bytes
+					? await formatValue(ctx, variable, bytes)
+					: '<unavailable>',
+			location: locationLabel(variable, depths, model, address, sp),
 			address,
-			approximate: variable.dynamic || isEarly(ctx, variable),
+			approximate: stale || variable.dynamic || isEarly(ctx, variable),
+			raw: stale && bytes ? hexDump(bytes) : undefined,
+			frameBase: variable.kind === 'stack' ? base : undefined,
+			frameBaseSource: variable.kind === 'stack' ? anchor?.source : undefined,
 			note,
 		});
+	}
+
+	if (notLive.length > 0) {
+		log(`  past the live stack pointer, not written yet: ${notLive.join(', ')}`);
 	}
 
 	resolved.sort(byGroupThenName);
@@ -575,7 +679,8 @@ function noteFor(
 	ctx: FrameContext,
 	variable: ghidra.DecompVar,
 	base: bigint | undefined,
-	bytes: Buffer | undefined
+	bytes: Buffer | undefined,
+	stale: boolean
 ): string | undefined {
 	if (variable.kind === 'unique' || variable.kind === 'hash') {
 		return 'an intermediate value of the decompiler - it is nowhere in memory';
@@ -585,6 +690,12 @@ function noteFor(
 	}
 	if (variable.kind === 'register' && bytes === undefined) {
 		return `the debugger did not report register ${variable.reg ?? '?'}`;
+	}
+	if (stale) {
+		return (
+			'the slot is past the live stack pointer - the program has not written it yet; ' +
+			'the bytes there are left over from an earlier, deeper call'
+		);
 	}
 	if (isEarly(ctx, variable)) {
 		return 'before the point where the decompiler considers it initialized';
@@ -710,8 +821,15 @@ async function formatValue(
 			const text = await readString(ctx, variable, target);
 			return text === undefined ? formatAddr(target) : `${formatAddr(target)} ${text}`;
 		}
-		default:
+		case 'struct':
+		case 'array':
 			return hexDump(bytes);
+		default:
+			// A class we have no branch for - including "other" from a plugin older than this
+			// extension. At machine-word size it is a number far more often than it is a blob.
+			return bytes.length >= 1 && bytes.length <= 8
+				? withHex(readInteger(bytes, false, bigEndian))
+				: hexDump(bytes);
 	}
 }
 

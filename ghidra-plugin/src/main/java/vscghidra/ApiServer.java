@@ -18,10 +18,12 @@ import ghidra.program.model.data.Array;
 import ghidra.program.model.data.BooleanDataType;
 import ghidra.program.model.data.DataType;
 import ghidra.program.model.data.DataTypeWithCharset;
+import ghidra.program.model.data.DefaultDataType;
 import ghidra.program.model.data.Enum;
 import ghidra.program.model.data.Pointer;
 import ghidra.program.model.data.Structure;
 import ghidra.program.model.data.TypeDef;
+import ghidra.program.model.data.Undefined;
 import ghidra.program.model.data.Union;
 import ghidra.program.model.lang.CompilerSpec;
 import ghidra.program.model.lang.Language;
@@ -171,6 +173,9 @@ class ApiServer {
 			.append(programCounter == null ? "null" : json(programCounter.getName()))
 			.append(",\"pointerSize\":").append(program.getDefaultPointerSize())
 			.append(",\"bigEndian\":").append(language.isBigEndian())
+			// Which way is "past the stack pointer" - the extension needs it to tell a slot the
+			// program has already written from one the next push has yet to reach.
+			.append(",\"stackGrowsDown\":").append(stackGrowsDown(program))
 			.append(",\"registers\":[");
 
 		boolean first = true;
@@ -382,6 +387,13 @@ class ApiServer {
 		if (type instanceof AbstractIntegerDataType integer) {
 			return integer.isSigned() ? "int" : "uint";
 		}
+		// undefined1/2/4/8 and the "??" default type are the decompiler saying it could not type
+		// the slot - which is most locals in stripped code. They are plain unsigned machine words,
+		// and printing them as a byte dump is what made "uVar6 = 0" read as "cc cc cc 00". Checked
+		// last on purpose: the Array branch above has to keep undefined1[16] an array.
+		if (type instanceof Undefined || type instanceof DefaultDataType) {
+			return "uint";
+		}
 		return "other";
 	}
 
@@ -416,6 +428,12 @@ class ApiServer {
 	private static Register stackPointer(Program program) {
 		CompilerSpec spec = program.getCompilerSpec();
 		return spec == null ? null : spec.getStackPointer();
+	}
+
+	/** Downward on x86, ARM, MIPS and most others - but the compiler spec knows for sure. */
+	private static boolean stackGrowsDown(Program program) {
+		CompilerSpec spec = program.getCompilerSpec();
+		return spec == null || spec.stackGrowsNegative();
 	}
 
 	/**
@@ -454,7 +472,11 @@ class ApiServer {
 		Address entry = function.getEntryPoint();
 		CallDepthChangeInfo cached = depthCache.get(entry);
 		if (cached == null) {
-			cached = new CallDepthChangeInfo(function);
+			// The flag is what makes getSPDepth/getRegDepth answer at all: without it Ghidra
+			// propagates the depths but keeps none of them per instruction, and every query
+			// comes back INVALID - which is why the extension used to see no depth anywhere
+			// and had to guess the frame base from a return address on the live stack.
+			cached = new CallDepthChangeInfo(function, true);
 			depthCache.put(entry, cached);
 		}
 		return cached;

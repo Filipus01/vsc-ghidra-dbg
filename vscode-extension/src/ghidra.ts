@@ -98,6 +98,8 @@ export interface RegisterModel {
 	programCounter: string | null;
 	pointerSize: number;
 	bigEndian: boolean;
+	/** which side of the stack pointer is scratch space; absent from an older plugin */
+	stackGrowsDown?: boolean;
 	registers: RegisterSlice[];
 }
 

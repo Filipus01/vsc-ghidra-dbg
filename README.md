@@ -177,7 +177,9 @@ The defaults themselves can be moved with `VSC_GHIDRA_DBG_HOST`, `VSC_GHIDRA_DBG
 4. Values come from the frame base, in order of how much each source can be trusted: the frame
    pointer when Ghidra knows its depth, otherwise the return address found on the live stack,
    otherwise Ghidra's own stack depth. Each variable is then read from memory or cut out of
-   the register it lives in.
+   the register it lives in. A stack slot still past the live stack pointer — a call argument
+   the function has not pushed yet, say — is reported as not written yet instead of showing
+   what an earlier, deeper call left behind.
 
 ### The HTTP API
 
@@ -189,7 +191,7 @@ to drive Ghidra from something else.
 | `GET /programs` | open programs: path, image base, language, pointer size, byte order, stack pointer |
 | `GET /decompile?program=&addr=` | pseudocode lines with their address ranges, plus every variable's storage |
 | `GET /frame?program=&addr=[&fp=]` | stack and frame pointer depths relative to the function entry |
-| `GET /registers?program=[&fp=]` | the processor's register model: which registers exist, and how narrow ones sit in their parents |
+| `GET /registers?program=[&fp=]` | the processor's register model: which registers exist, how narrow ones sit in their parents, which way the stack grows |
 | `GET /symbol?program=&addr=` | function and symbol at an address |
 | `GET /bytes?program=&addr=&len=` | bytes from the program image |
 
